@@ -1,7 +1,7 @@
 streamlit
+streamlit-autorefresh
 requests
 pandas
 numpy
 plotly
 scikit-learn
-xgboost
