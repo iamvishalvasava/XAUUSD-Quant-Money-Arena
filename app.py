@@ -1,6 +1,6 @@
 # ==============================================================================
 # 🥇 XAUUSD QUANT MONEY ARENA V5
-# 🔐 GOLDAPI CONNECTION ENGINE — FINAL FIXED VERSION
+# 🔐 GOLDAPI CONNECTION ENGINE — CLEAN FINAL VERSION
 # ==============================================================================
 
 import os
@@ -15,10 +15,6 @@ import streamlit as st
 # ⚙️ GOLDAPI CONFIGURATION
 # ==============================================================================
 
-# IMPORTANT:
-# This must be the REAL API base URL.
-# Do NOT paste Markdown links here.
-
 GOLDAPI_BASE_URL = "https://www.goldapi.io/api/price"
 
 GOLDAPI_METAL = "XAU"
@@ -28,7 +24,7 @@ REQUEST_TIMEOUT = 15
 MAX_RETRIES = 2
 RETRY_DELAY = 2.0
 
-# Protect API quota during Streamlit reruns
+# Prevent excessive requests caused by Streamlit reruns
 MIN_REQUEST_INTERVAL = 5.0
 
 
@@ -37,28 +33,15 @@ MIN_REQUEST_INTERVAL = 5.0
 # ==============================================================================
 
 def get_goldapi_key():
-    """
-    Load GoldAPI key from:
-
-    1. Streamlit Secrets
-    2. Environment variables
-
-    Supported secret names:
-
-        GOLDAPI = "goldapi-86c54e287b880c34b846d93bd5ec6d12-io"
-
-    OR
-
-        GOLDAPI_KEY = "your_key"
-    """
 
     api_key = None
 
     # --------------------------------------------------------------------------
-    # 1️⃣ STREAMLIT SECRETS
+    # STREAMLIT SECRETS
     # --------------------------------------------------------------------------
 
     try:
+
         if "GOLDAPI" in st.secrets:
             api_key = st.secrets["GOLDAPI"]
 
@@ -69,7 +52,7 @@ def get_goldapi_key():
         pass
 
     # --------------------------------------------------------------------------
-    # 2️⃣ ENVIRONMENT VARIABLES
+    # ENVIRONMENT VARIABLES
     # --------------------------------------------------------------------------
 
     if not api_key:
@@ -86,12 +69,10 @@ def get_goldapi_key():
 
         api_key = str(api_key).strip()
 
-        # Remove accidental quotes
         api_key = api_key.strip('"')
         api_key = api_key.strip("'")
 
-        # Empty key protection
-        if not api_key:
+        if len(api_key) == 0:
             return None
 
     return api_key
@@ -108,6 +89,7 @@ def initialize_goldapi_state():
         "goldapi_last_quote": None,
         "goldapi_last_success_time": None,
         "goldapi_last_request_time": 0.0,
+
         "goldapi_last_error": None,
 
         "goldapi_consecutive_errors": 0,
@@ -116,7 +98,6 @@ def initialize_goldapi_state():
         "goldapi_successful_requests": 0,
 
         "goldapi_last_latency_ms": None,
-
         "goldapi_last_status_code": None,
 
     }
@@ -124,14 +105,16 @@ def initialize_goldapi_state():
     for key, value in defaults.items():
 
         if key not in st.session_state:
+
             st.session_state[key] = value
 
 
+# Initialize immediately
 initialize_goldapi_state()
 
 
 # ==============================================================================
-# 🌐 BUILD GOLDAPI URL
+# 🌐 BUILD API URL
 # ==============================================================================
 
 def get_goldapi_url():
@@ -157,7 +140,7 @@ def build_goldapi_headers(api_key):
 
         "Accept": "application/json",
 
-        "User-Agent": "XAUUSD-Quant-Money-Arena-V5/1.0",
+        "User-Agent": "XAUUSD-Quant-Money-Arena-V5/1.0"
 
     }
 
@@ -192,33 +175,20 @@ def parse_goldapi_quote(data, latency_ms):
             "GoldAPI returned invalid JSON data"
         )
 
-    # --------------------------------------------------------------------------
-    # PRICE
-    # --------------------------------------------------------------------------
-
     price = safe_float(data.get("price"))
 
     bid = safe_float(data.get("bid"))
 
     ask = safe_float(data.get("ask"))
 
-    # --------------------------------------------------------------------------
-    # VALIDATE PRICE
-    # --------------------------------------------------------------------------
-
     if price is None:
 
         raise ValueError(
 
             "GoldAPI response does not contain a valid price. "
-
             f"Available fields: {list(data.keys())}"
 
         )
-
-    # --------------------------------------------------------------------------
-    # SPREAD
-    # --------------------------------------------------------------------------
 
     spread = None
 
@@ -226,15 +196,7 @@ def parse_goldapi_quote(data, latency_ms):
 
         spread = ask - bid
 
-    # --------------------------------------------------------------------------
-    # TIMESTAMP
-    # --------------------------------------------------------------------------
-
     now_utc = datetime.now(timezone.utc)
-
-    # --------------------------------------------------------------------------
-    # STANDARDIZED QUOTE
-    # --------------------------------------------------------------------------
 
     quote = {
 
@@ -266,7 +228,7 @@ def parse_goldapi_quote(data, latency_ms):
 
         "cached": False,
 
-        "raw": data,
+        "raw": data
 
     }
 
@@ -274,7 +236,7 @@ def parse_goldapi_quote(data, latency_ms):
 
 
 # ==============================================================================
-# ❌ FORMAT GOLDAPI ERROR
+# ❌ FORMAT PROVIDER ERROR
 # ==============================================================================
 
 def get_goldapi_error_message(response):
@@ -289,105 +251,62 @@ def get_goldapi_error_message(response):
 
         body = response.text
 
-    # --------------------------------------------------------------------------
-    # 400
-    # --------------------------------------------------------------------------
+    body_text = str(body)
+
+    # Limit huge HTML error pages
+    if len(body_text) > 1000:
+        body_text = body_text[:1000] + "..."
 
     if status == 400:
 
         return (
-
-            "❌ GOLDAPI HTTP 400 — BAD REQUEST\n\n"
-
-            "Check the API endpoint.\n\n"
-
-            f"Provider response:\n{body}"
-
+            f"❌ GoldAPI HTTP 400 — BAD REQUEST\n\n"
+            f"Endpoint:\n{get_goldapi_url()}\n\n"
+            f"Provider response:\n{body_text}"
         )
-
-    # --------------------------------------------------------------------------
-    # 401
-    # --------------------------------------------------------------------------
 
     if status == 401:
 
         return (
-
-            "❌ GOLDAPI HTTP 401 — UNAUTHORIZED\n\n"
-
+            "❌ GoldAPI HTTP 401 — UNAUTHORIZED\n\n"
             "The API key was rejected.\n\n"
-
-            "Check your Streamlit Secret:\n"
-
-            'GOLDAPI = "YOUR_REAL_API_KEY"\n\n'
-
-            f"Provider response:\n{body}"
-
+            "Check your Streamlit Secret name and GoldAPI key.\n\n"
+            f"Provider response:\n{body_text}"
         )
-
-    # --------------------------------------------------------------------------
-    # 403
-    # --------------------------------------------------------------------------
 
     if status == 403:
 
         return (
-
-            "❌ GOLDAPI HTTP 403 — ACCESS FORBIDDEN\n\n"
-
+            "❌ GoldAPI HTTP 403 — ACCESS FORBIDDEN\n\n"
             "The request reached GoldAPI, but access was denied.\n\n"
-
             "Possible reasons:\n"
-
-            "• API key is invalid\n"
-            "• API key is expired or revoked\n"
-            "• GoldAPI account access is restricted\n"
-            "• API quota/plan restriction\n"
-            "• The wrong API key was copied\n\n"
-
-            f"Provider response:\n{body}"
-
+            "• Invalid API key\n"
+            "• Expired or revoked API key\n"
+            "• Account/plan restriction\n"
+            "• API quota exhausted\n\n"
+            f"Provider response:\n{body_text}"
         )
-
-    # --------------------------------------------------------------------------
-    # 429
-    # --------------------------------------------------------------------------
 
     if status == 429:
 
         return (
-
-            "⚠️ GOLDAPI HTTP 429 — RATE LIMIT REACHED\n\n"
-
+            "⚠️ GoldAPI HTTP 429 — RATE LIMIT REACHED\n\n"
             "Too many requests were sent.\n\n"
-
-            f"Provider response:\n{body}"
-
+            f"Provider response:\n{body_text}"
         )
-
-    # --------------------------------------------------------------------------
-    # SERVER ERROR
-    # --------------------------------------------------------------------------
 
     if status >= 500:
 
         return (
-
-            f"⚠️ GOLDAPI HTTP {status} — PROVIDER SERVER ERROR\n\n"
-
-            f"Provider response:\n{body}"
-
+            f"⚠️ GoldAPI HTTP {status} — PROVIDER SERVER ERROR\n\n"
+            f"Provider response:\n{body_text}"
         )
-
-    # --------------------------------------------------------------------------
-    # OTHER
-    # --------------------------------------------------------------------------
 
     return (
 
-        f"❌ GOLDAPI HTTP {status}\n\n"
+        f"❌ GoldAPI HTTP {status}\n\n"
 
-        f"Provider response:\n{body}"
+        f"Provider response:\n{body_text}"
 
     )
 
@@ -401,14 +320,10 @@ def fetch_goldapi_xauusd():
     initialize_goldapi_state()
 
     # --------------------------------------------------------------------------
-    # LOAD API KEY
+    # GET API KEY
     # --------------------------------------------------------------------------
 
     api_key = get_goldapi_key()
-
-    # --------------------------------------------------------------------------
-    # CHECK API KEY
-    # --------------------------------------------------------------------------
 
     if not api_key:
 
@@ -416,9 +331,9 @@ def fetch_goldapi_xauusd():
 
             "❌ GOLDAPI API KEY NOT FOUND\n\n"
 
-            "Add this in Streamlit Cloud → App Settings → Secrets:\n\n"
+            "Add this in Streamlit Secrets:\n\n"
 
-            'GOLDAPI = "YOUR_REAL_GOLDAPI_KEY"'
+            'GOLDAPI = "YOUR_REAL_API_KEY"'
 
         )
 
@@ -432,12 +347,12 @@ def fetch_goldapi_xauusd():
 
             "error": error,
 
-            "using_cached_quote": False,
+            "using_cached_quote": False
 
         }
 
     # --------------------------------------------------------------------------
-    # RATE LIMIT / CACHE PROTECTION
+    # CACHE / RATE PROTECTION
     # --------------------------------------------------------------------------
 
     now = time.time()
@@ -464,8 +379,7 @@ def fetch_goldapi_xauusd():
             cached_quote["cache_age_seconds"] = round(
 
                 time.time()
-                -
-                cached_quote.get(
+                - cached_quote.get(
                     "received_epoch",
                     time.time()
                 ),
@@ -482,22 +396,15 @@ def fetch_goldapi_xauusd():
 
                 "error": None,
 
-                "using_cached_quote": True,
+                "using_cached_quote": True
 
             }
 
     # --------------------------------------------------------------------------
-    # BUILD URL
+    # BUILD REQUEST
     # --------------------------------------------------------------------------
 
     url = get_goldapi_url()
-
-    # Expected:
-    # https://www.goldapi.io/api/price/XAU/USD
-
-    # --------------------------------------------------------------------------
-    # HEADERS
-    # --------------------------------------------------------------------------
 
     headers = build_goldapi_headers(api_key)
 
@@ -531,20 +438,19 @@ def fetch_goldapi_xauusd():
 
                 headers=headers,
 
-                timeout=REQUEST_TIMEOUT,
+                timeout=REQUEST_TIMEOUT
 
             )
 
             latency_ms = (
 
                 time.perf_counter()
-                -
-                request_start
+                - request_start
 
             ) * 1000
 
             # ------------------------------------------------------------------
-            # SAVE STATUS
+            # SAVE DEBUG INFO
             # ------------------------------------------------------------------
 
             st.session_state[
@@ -556,20 +462,12 @@ def fetch_goldapi_xauusd():
             ] = response.status_code
 
             # ==================================================================
-            # ✅ SUCCESS
+            # SUCCESS
             # ==================================================================
 
             if response.status_code == 200:
 
-                try:
-
-                    data = response.json()
-
-                except Exception as e:
-
-                    raise ValueError(
-                        f"Invalid JSON response: {e}"
-                    )
+                data = response.json()
 
                 quote = parse_goldapi_quote(
 
@@ -580,7 +478,7 @@ def fetch_goldapi_xauusd():
                 )
 
                 # --------------------------------------------------------------
-                # STORE SUCCESS
+                # SAVE SUCCESS
                 # --------------------------------------------------------------
 
                 st.session_state[
@@ -611,28 +509,28 @@ def fetch_goldapi_xauusd():
 
                     "error": None,
 
-                    "using_cached_quote": False,
+                    "using_cached_quote": False
 
                 }
 
             # ==================================================================
-            # ❌ HTTP ERROR
+            # HTTP ERROR
             # ==================================================================
 
             last_error = get_goldapi_error_message(
                 response
             )
 
-            # Do not retry authentication/access errors
-
-            if response.status_code in [400, 401, 403]:
+            # Never retry authentication/access errors
+            if response.status_code in (
+                400,
+                401,
+                403
+            ):
 
                 break
 
-            # ------------------------------------------------------------------
-            # RATE LIMIT
-            # ------------------------------------------------------------------
-
+            # Rate limit
             if response.status_code == 429:
 
                 if attempt < MAX_RETRIES:
@@ -643,15 +541,11 @@ def fetch_goldapi_xauusd():
 
                     try:
 
-                        wait_time = float(
-                            retry_after
-                        )
+                        wait_time = float(retry_after)
 
                     except Exception:
 
-                        wait_time = (
-                            RETRY_DELAY * attempt
-                        )
+                        wait_time = RETRY_DELAY * attempt
 
                     time.sleep(wait_time)
 
@@ -659,10 +553,7 @@ def fetch_goldapi_xauusd():
 
                 break
 
-            # ------------------------------------------------------------------
-            # SERVER ERROR
-            # ------------------------------------------------------------------
-
+            # Server errors
             if response.status_code >= 500:
 
                 if attempt < MAX_RETRIES:
@@ -675,13 +566,7 @@ def fetch_goldapi_xauusd():
 
                 break
 
-            # Other errors
-
             break
-
-        # ======================================================================
-        # TIMEOUT
-        # ======================================================================
 
         except requests.exceptions.Timeout:
 
@@ -692,49 +577,30 @@ def fetch_goldapi_xauusd():
 
             )
 
-        # ======================================================================
-        # CONNECTION ERROR
-        # ======================================================================
-
         except requests.exceptions.ConnectionError as e:
 
             last_error = (
 
-                "❌ GoldAPI connection error:\n"
-
-                f"{e}"
+                f"❌ GoldAPI connection error:\n{e}"
 
             )
-
-        # ======================================================================
-        # REQUEST ERROR
-        # ======================================================================
 
         except requests.exceptions.RequestException as e:
 
             last_error = (
 
-                "❌ GoldAPI request error:\n"
-
-                f"{e}"
+                f"❌ GoldAPI request error:\n{e}"
 
             )
-
-        # ======================================================================
-        # OTHER ERROR
-        # ======================================================================
 
         except Exception as e:
 
             last_error = (
 
-                "❌ Unexpected GoldAPI error:\n"
-
+                f"❌ Unexpected GoldAPI error:\n"
                 f"{type(e).__name__}: {e}"
 
             )
-
-        # ----------------------------------------------------------------------
 
         if attempt < MAX_RETRIES:
 
@@ -743,7 +609,7 @@ def fetch_goldapi_xauusd():
             )
 
     # ==========================================================================
-    # ❌ ALL REQUESTS FAILED
+    # ALL REQUESTS FAILED
     # ==========================================================================
 
     st.session_state[
@@ -755,7 +621,7 @@ def fetch_goldapi_xauusd():
     ] += 1
 
     # --------------------------------------------------------------------------
-    # USE LAST CACHED QUOTE
+    # USE CACHED DATA
     # --------------------------------------------------------------------------
 
     cached = st.session_state.get(
@@ -771,8 +637,7 @@ def fetch_goldapi_xauusd():
         cached_quote["cache_age_seconds"] = round(
 
             time.time()
-            -
-            cached_quote.get(
+            - cached_quote.get(
                 "received_epoch",
                 time.time()
             ),
@@ -789,7 +654,7 @@ def fetch_goldapi_xauusd():
 
             "error": last_error,
 
-            "using_cached_quote": True,
+            "using_cached_quote": True
 
         }
 
@@ -805,7 +670,7 @@ def fetch_goldapi_xauusd():
 
         "error": last_error,
 
-        "using_cached_quote": False,
+        "using_cached_quote": False
 
     }
 
@@ -887,31 +752,25 @@ def get_goldapi_status():
         "last_status_code":
             st.session_state.get(
                 "goldapi_last_status_code"
-            ),
-
-        "last_success_time":
-            st.session_state.get(
-                "goldapi_last_success_time"
-            ),
+            )
 
     }
 
 
 # ==============================================================================
-# 🖥️ SHOW CONNECTION STATUS
+# 🖥️ DISPLAY GOLDAPI STATUS
 # ==============================================================================
 
 def show_goldapi_connection_status():
 
     status = get_goldapi_status()
 
-    st.subheader("🔐 GOLDAPI CONNECTION STATUS")
+    st.subheader("🔐 GoldAPI Connection Status")
 
     if status["api_key_configured"]:
 
         st.success(
-            f"🟢 API Key Detected "
-            f"(length: {status['api_key_length']})"
+            "🟢 GoldAPI API Key Detected"
         )
 
     else:
@@ -923,48 +782,43 @@ def show_goldapi_connection_status():
     col1, col2, col3, col4 = st.columns(4)
 
     col1.metric(
-
         "Provider",
-
         status["provider"]
-
     )
 
     col2.metric(
-
         "HTTP Status",
-
         status["last_status_code"]
-        if status["last_status_code"]
+        if status["last_status_code"] is not None
         else "—"
-
     )
 
     col3.metric(
-
         "Latency",
-
         f"{status['last_latency_ms']} ms"
-
         if status["last_latency_ms"] is not None
-
         else "—"
-
     )
 
     col4.metric(
-
         "Success Rate",
-
         f"{status['success_rate']}%"
-
     )
 
     with st.expander("🔍 GoldAPI Debug Information"):
 
-        st.write(
-            "Endpoint:",
+        st.code(
             status["endpoint"]
+        )
+
+        st.write(
+            "API Key Detected:",
+            status["api_key_configured"]
+        )
+
+        st.write(
+            "API Key Length:",
+            status["api_key_length"]
         )
 
         st.write(
@@ -975,16 +829,6 @@ def show_goldapi_connection_status():
         st.write(
             "Successful Requests:",
             status["successful_requests"]
-        )
-
-        st.write(
-            "Consecutive Errors:",
-            status["consecutive_errors"]
-        )
-
-        st.write(
-            "API Key Configured:",
-            status["api_key_configured"]
         )
 
     if status["last_error"]:
@@ -1011,16 +855,11 @@ def test_goldapi_connection():
             "connected": True,
 
             "message": (
-
                 f"🟢 GoldAPI Connected | "
-
-                f"XAU/USD: "
-
-                f"${quote['price']:,.3f}"
-
+                f"XAU/USD: ${quote['price']:,.3f}"
             ),
 
-            "quote": quote,
+            "quote": quote
 
         }
 
@@ -1028,12 +867,12 @@ def test_goldapi_connection():
 
         "connected": False,
 
-        "message":
+        "message": (
             result.get("error")
-            or "Unknown GoldAPI error",
+            or "Unknown GoldAPI error"
+        ),
 
-        "quote":
-            result.get("quote"),
+        "quote": result.get("quote")
 
     }
 
