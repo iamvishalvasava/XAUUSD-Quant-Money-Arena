@@ -45,7 +45,7 @@ def get_goldapi_key():
 
     Supported secret names:
 
-        GOLDAPI = "your_key"
+        GOLDAPI = "goldapi-86c54e287b880c34b846d93bd5ec6d12-io"
 
     OR
 
