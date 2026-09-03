@@ -880,3 +880,231 @@ def test_goldapi_connection():
 # ==============================================================================
 # 🚀 END GOLDAPI CONNECTION ENGINE
 # ==============================================================================
+
+# ==============================================================================
+# 🚀 APP STARTUP / DEBUG UI
+# ==============================================================================
+
+st.set_page_config(
+    page_title="XAUUSD Quant Money Arena V5",
+    page_icon="🥇",
+    layout="wide"
+)
+
+
+def main():
+
+    st.title("🥇 XAUUSD QUANT MONEY ARENA V5")
+
+    st.caption(
+        "GoldAPI Connection & Live XAU/USD Market Data"
+    )
+
+    # --------------------------------------------------------------------------
+    # GOLDAPI CONNECTION STATUS
+    # --------------------------------------------------------------------------
+
+    show_goldapi_connection_status()
+
+    st.divider()
+
+    # --------------------------------------------------------------------------
+    # TEST CONNECTION BUTTON
+    # --------------------------------------------------------------------------
+
+    col1, col2 = st.columns(2)
+
+    with col1:
+
+        if st.button(
+            "🔄 TEST GOLDAPI CONNECTION",
+            use_container_width=True
+        ):
+
+            with st.spinner(
+                "Connecting to GoldAPI..."
+            ):
+
+                result = test_goldapi_connection()
+
+            if result["connected"]:
+
+                st.success(
+                    result["message"]
+                )
+
+                quote = result["quote"]
+
+                if quote:
+
+                    c1, c2, c3 = st.columns(3)
+
+                    c1.metric(
+                        "XAU/USD Price",
+                        f"${quote['price']:,.3f}"
+                    )
+
+                    c2.metric(
+                        "Bid",
+                        f"${quote['bid']:,.3f}"
+                        if quote.get("bid") is not None
+                        else "N/A"
+                    )
+
+                    c3.metric(
+                        "Ask",
+                        f"${quote['ask']:,.3f}"
+                        if quote.get("ask") is not None
+                        else "N/A"
+                    )
+
+                    with st.expander(
+                        "📊 Full GoldAPI Response"
+                    ):
+
+                        st.json(
+                            quote.get("raw", {})
+                        )
+
+            else:
+
+                st.error(
+                    result["message"]
+                )
+
+
+    with col2:
+
+        if st.button(
+            "📡 GET LIVE XAU/USD PRICE",
+            use_container_width=True
+        ):
+
+            with st.spinner(
+                "Fetching live market price..."
+            ):
+
+                result = fetch_goldapi_xauusd()
+
+            if result["quote"]:
+
+                quote = result["quote"]
+
+                if result["success"]:
+
+                    if result.get(
+                        "using_cached_quote"
+                    ):
+
+                        st.info(
+                            "📦 Using cached quote"
+                        )
+
+                    else:
+
+                        st.success(
+                            "🟢 LIVE GOLDAPI DATA RECEIVED"
+                        )
+
+                else:
+
+                    st.warning(
+                        "⚠️ Live request failed. "
+                        "Showing cached data."
+                    )
+
+                    if result.get("error"):
+
+                        st.code(
+                            result["error"]
+                        )
+
+                st.metric(
+                    "XAU/USD",
+                    f"${quote['price']:,.3f}"
+                )
+
+            else:
+
+                st.error(
+                    "❌ NO XAU/USD DATA AVAILABLE"
+                )
+
+                if result.get("error"):
+
+                    st.code(
+                        result["error"]
+                    )
+
+
+    # --------------------------------------------------------------------------
+    # AUTO CONNECTION TEST ON FIRST LOAD
+    # --------------------------------------------------------------------------
+
+    st.divider()
+
+    st.subheader("📡 Automatic GoldAPI Test")
+
+    result = fetch_goldapi_xauusd()
+
+    if result["quote"]:
+
+        quote = result["quote"]
+
+        if result["success"]:
+
+            st.success(
+                "🟢 GoldAPI Engine Working Successfully"
+            )
+
+        else:
+
+            st.warning(
+                "⚠️ Cached data available"
+            )
+
+        col1, col2, col3, col4 = st.columns(4)
+
+        col1.metric(
+            "Price",
+            f"${quote['price']:,.3f}"
+        )
+
+        col2.metric(
+            "Bid",
+            f"${quote['bid']:,.3f}"
+            if quote.get("bid") is not None
+            else "N/A"
+        )
+
+        col3.metric(
+            "Ask",
+            f"${quote['ask']:,.3f}"
+            if quote.get("ask") is not None
+            else "N/A"
+        )
+
+        col4.metric(
+            "Latency",
+            f"{quote.get('latency_ms', 0):.0f} ms"
+        )
+
+    else:
+
+        st.error(
+            "🔴 GoldAPI connection failed"
+        )
+
+        if result.get("error"):
+
+            st.code(
+                result["error"]
+            )
+
+
+# ==============================================================================
+# ▶️ RUN APP
+# ==============================================================================
+
+if __name__ == "__main__":
+    main()
