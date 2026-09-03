@@ -1,198 +1,116 @@
 # ==============================================================================
-# 🥇⚡ XAUUSD QUANT MONEY ARENA V5 - FIXED
+# 🥇 XAUUSD QUANT MONEY ARENA V5
+# 🔐 GOLDAPI CONNECTION ENGINE — FIXED VERSION
 # ==============================================================================
-#
-# FEATURES
-# ------------------------------------------------------------------------------
-# ✓ GoldAPI.io LIVE XAU/USD
-# ✓ 5-second automatic refresh
-# ✓ Real returned quote history
-# ✓ Bid / Ask / Mid / Spread
-# ✓ 180-second BUY / SELL forecast
-# ✓ 300-second BUY / SELL forecast
-# ✓ Momentum Engine
-# ✓ Mean Reversion Engine
-# ✓ Trend Engine
-# ✓ Microstructure Engine (quote-based only)
-# ✓ Statistical Engine
-# ✓ Random Forest ML when sufficient history exists
-# ✓ Paper trade tracking using later observed prices
-# ✓ Last 10 completed 5-minute trades
-# ✓ Live charts
-# ✓ Streamlit Cloud compatible
-#
-# IMPORTANT
-# ------------------------------------------------------------------------------
-# PAPER / RESEARCH ONLY
-# BUY / SELL is a MODEL DIRECTION.
-# MODEL PROBABILITIES ARE ESTIMATES.
-# NO GUARANTEED PROFIT.
-#
-# DATA INTEGRITY
-# ------------------------------------------------------------------------------
-# ✓ No fabricated tick data
-# ✓ No fake volume
-# ✓ No fabricated order book
-# ✓ No fake latency
-# ✓ Polling is NOT WebSocket streaming
-# ✓ Spot/futures are not silently mixed
-# ==============================================================================
-
 
 import os
 import time
-import math
-import warnings
-from datetime import datetime, timezone
-
-import numpy as np
-import pandas as pd
 import requests
 import streamlit as st
-import plotly.graph_objects as go
-
-from sklearn.ensemble import RandomForestClassifier
-
-warnings.filterwarnings("ignore")
+from datetime import datetime, timezone
 
 
 # ==============================================================================
-# PAGE CONFIG
+# ⚙️ GOLDAPI CONFIGURATION
 # ==============================================================================
 
-st.set_page_config(
-    page_title="XAUUSD Quant Money Arena V5",
-    page_icon="🥇",
-    layout="wide",
-    initial_sidebar_state="expanded",
-)
+GOLDAPI_BASE_URL = "https://www.goldapi.io/api"
+GOLDAPI_SYMBOL = "XAU/USD"
 
+REQUEST_TIMEOUT = 12
+MAX_RETRIES = 3
+RETRY_DELAY = 2.0
 
-# ==============================================================================
-# OPTIONAL AUTO REFRESH
-# ==============================================================================
-
-try:
-    from streamlit_autorefresh import st_autorefresh
-    AUTOREFRESH_AVAILABLE = True
-except Exception:
-    AUTOREFRESH_AVAILABLE = False
+# 5-second polling is fine, but avoid accidentally hammering the API
+MIN_REQUEST_INTERVAL = 4.0
 
 
 # ==============================================================================
-# CONSTANTS
+# 🔐 LOAD GOLDAPI API KEY
 # ==============================================================================
 
-APP_VERSION = "V5 FIXED"
-SYMBOL = "XAUUSD"
-INSTRUMENT = "SPOT_XAUUSD"
+def get_goldapi_key():
+    """
+    Load GoldAPI key safely.
 
-POLL_SECONDS = 5
+    Priority:
+        1. Streamlit Cloud Secrets
+        2. Environment Variable
 
-FORECAST_HORIZONS = [180, 300]
+    Expected Streamlit secret:
 
-MAX_QUOTES = 10000
-MAX_FORECASTS = 5000
-MAX_COMPLETED_TRADES = 1000
+        GOLDAPI = "YOUR_API_KEY"
+    """
 
-MIN_HISTORY_FOR_SIGNALS = 8
-MIN_HISTORY_FOR_ML = 80
+    api_key = None
 
-REQUEST_TIMEOUT = 10
+    # --------------------------------------------------------------------------
+    # 1️⃣ STREAMLIT SECRETS
+    # --------------------------------------------------------------------------
+
+    try:
+
+        if "GOLDAPI" in st.secrets:
+            api_key = st.secrets["GOLDAPI"]
+
+        # Optional alternative name
+        elif "GOLDAPI_KEY" in st.secrets:
+            api_key = st.secrets["GOLDAPI_KEY"]
+
+    except Exception:
+        pass
 
 
-# ==============================================================================
-# CUSTOM CSS
-# ==============================================================================
+    # --------------------------------------------------------------------------
+    # 2️⃣ ENVIRONMENT VARIABLE FALLBACK
+    # --------------------------------------------------------------------------
 
-st.markdown("""
-<style>
+    if not api_key:
 
-.block-container {
-    padding-top: 1.2rem;
-    padding-bottom: 2rem;
-}
+        api_key = os.getenv("GOLDAPI")
 
-[data-testid="stMetric"] {
-    background-color: rgba(20, 25, 35, 0.75);
-    border: 1px solid rgba(100, 200, 180, 0.25);
-    padding: 12px;
-    border-radius: 10px;
-}
+    if not api_key:
 
-div[data-testid="stMetricLabel"] {
-    font-size: 0.80rem;
-}
+        api_key = os.getenv("GOLDAPI_KEY")
 
-.quant-title {
-    text-align: center;
-    font-size: 28px;
-    font-weight: 800;
-    margin-bottom: 2px;
-}
 
-.quant-subtitle {
-    text-align: center;
-    font-size: 11px;
-    opacity: 0.65;
-    margin-bottom: 25px;
-}
+    # --------------------------------------------------------------------------
+    # CLEAN KEY
+    # --------------------------------------------------------------------------
 
-.signal-buy {
-    color: #00d084;
-    font-size: 32px;
-    font-weight: 800;
-}
+    if api_key:
 
-.signal-sell {
-    color: #ff4b4b;
-    font-size: 32px;
-    font-weight: 800;
-}
+        api_key = str(api_key).strip()
 
-.signal-warmup {
-    color: #ffcc00;
-}
+        # Remove accidental surrounding quotes
+        api_key = api_key.strip('"')
+        api_key = api_key.strip("'")
 
-</style>
-""", unsafe_allow_html=True)
+    return api_key
 
 
 # ==============================================================================
-# SESSION STATE
+# 🔑 GLOBAL API KEY
 # ==============================================================================
 
-def initialize_state():
+GOLDAPI_KEY = get_goldapi_key()
+
+
+# ==============================================================================
+# 🧠 SESSION STATE INITIALIZATION
+# ==============================================================================
+
+def initialize_goldapi_state():
 
     defaults = {
 
-        "quotes": [],
-
-        "forecasts": [],
-
-        "completed_trades": [],
-
-        "paper_pnl": 0.0,
-
-        "wins": 0,
-
-        "losses": 0,
-
-        "last_quote_time": None,
-
-        "last_forecast": {},
-
-        "ml_model": None,
-
-        "ml_last_train_count": 0,
-
-        "ml_status": "INSUFFICIENT_HISTORY",
-
-        "request_count": 0,
-
-        "provider_errors": 0,
-
-        "app_started": datetime.now(timezone.utc),
+        "goldapi_last_quote": None,
+        "goldapi_last_success_time": None,
+        "goldapi_last_request_time": 0.0,
+        "goldapi_last_error": None,
+        "goldapi_consecutive_errors": 0,
+        "goldapi_total_requests": 0,
+        "goldapi_successful_requests": 0,
 
     }
 
@@ -203,1992 +121,769 @@ def initialize_state():
             st.session_state[key] = value
 
 
-initialize_state()
+initialize_goldapi_state()
 
 
 # ==============================================================================
-# API KEY
+# 🌐 BUILD REQUEST HEADERS
 # ==============================================================================
 
-def get_goldapi_key():
+def build_goldapi_headers():
 
-    # Streamlit Secrets
+    return {
+
+        # GoldAPI authentication header
+        "x-access-token": GOLDAPI_KEY,
+
+        # Request JSON
+        "Accept": "application/json",
+
+        # Helpful user agent
+        "User-Agent": "XAUUSD-Quant-Money-Arena-V5/1.0"
+
+    }
+
+
+# ==============================================================================
+# 🔎 SAFE NUMBER CONVERTER
+# ==============================================================================
+
+def safe_float(value, default=None):
 
     try:
 
-        if "GOLDAPI" in st.secrets:
+        if value is None:
+            return default
 
-            return str(st.secrets["GOLDAPI"])
+        return float(value)
 
     except Exception:
 
-        pass
-
-    # Environment variable fallback
-
-    key = os.getenv("GOLDAPI")
-
-    if key:
-        return key
-
-    return None
-
-
-GOLDAPI_KEY = get_goldapi_key()
+        return default
 
 
 # ==============================================================================
-# GOLDAPI FETCH
+# 🧾 PARSE GOLDAPI RESPONSE
 # ==============================================================================
 
-def fetch_live_xauusd():
+def parse_goldapi_quote(data, latency_ms):
+
+    """
+    Converts GoldAPI response into a standard XAUUSD quote format.
+    """
+
+    if not isinstance(data, dict):
+
+        raise ValueError("GoldAPI returned invalid JSON data")
+
+
+    # --------------------------------------------------------------------------
+    # GOLDAPI PRICE FIELDS
+    # --------------------------------------------------------------------------
+
+    price = safe_float(data.get("price"))
+
+    bid = safe_float(data.get("bid"))
+
+    ask = safe_float(data.get("ask"))
+
+
+    # --------------------------------------------------------------------------
+    # VALIDATE PRICE
+    # --------------------------------------------------------------------------
+
+    if price is None:
+
+        raise ValueError(
+            f"GoldAPI response does not contain a valid price. "
+            f"Received keys: {list(data.keys())}"
+        )
+
+
+    # --------------------------------------------------------------------------
+    # BID / ASK FALLBACK LOGIC
+    #
+    # IMPORTANT:
+    # We do NOT invent fake Bid/Ask prices.
+    #
+    # If provider does not return them:
+    # bid = None
+    # ask = None
+    # spread = None
+    # --------------------------------------------------------------------------
+
+    spread = None
+
+    if bid is not None and ask is not None:
+
+        spread = ask - bid
+
+
+    # --------------------------------------------------------------------------
+    # TIMESTAMP
+    # --------------------------------------------------------------------------
+
+    provider_timestamp = data.get("timestamp")
+
+    now_utc = datetime.now(timezone.utc)
+
+
+    # --------------------------------------------------------------------------
+    # STANDARDIZED QUOTE
+    # --------------------------------------------------------------------------
+
+    quote = {
+
+        "provider": "GOLDAPI",
+
+        "instrument": "SPOT_XAUUSD",
+
+        "symbol": "XAU/USD",
+
+        "price": price,
+
+        "mid": price,
+
+        "bid": bid,
+
+        "ask": ask,
+
+        "spread": spread,
+
+        "provider_timestamp": provider_timestamp,
+
+        "received_at": now_utc.isoformat(),
+
+        "received_epoch": time.time(),
+
+        "latency_ms": round(latency_ms, 2),
+
+        "raw": data
+
+    }
+
+
+    return quote
+
+
+# ==============================================================================
+# 🛡️ GOLDAPI ERROR MESSAGE
+# ==============================================================================
+
+def get_goldapi_error_message(response):
+
+    status = response.status_code
+
+    try:
+
+        body = response.json()
+
+    except Exception:
+
+        body = response.text
+
+
+    # --------------------------------------------------------------------------
+    # HTTP 403
+    # --------------------------------------------------------------------------
+
+    if status == 403:
+
+        return (
+            "GoldAPI HTTP 403 — ACCESS FORBIDDEN.\n\n"
+            "Possible causes:\n"
+            "• API key is invalid\n"
+            "• API key has expired or was revoked\n"
+            "• API key is not correctly saved in Streamlit Secrets\n"
+            "• Your GoldAPI plan does not allow this request\n"
+            "• Provider blocked the request\n\n"
+            f"Provider response: {body}"
+        )
+
+
+    # --------------------------------------------------------------------------
+    # HTTP 401
+    # --------------------------------------------------------------------------
+
+    if status == 401:
+
+        return (
+            "GoldAPI HTTP 401 — UNAUTHORIZED.\n\n"
+            "Check your GOLDAPI secret and make sure the API key is valid.\n\n"
+            f"Provider response: {body}"
+        )
+
+
+    # --------------------------------------------------------------------------
+    # HTTP 429
+    # --------------------------------------------------------------------------
+
+    if status == 429:
+
+        return (
+            "GoldAPI HTTP 429 — TOO MANY REQUESTS.\n\n"
+            "The API rate limit has been reached.\n"
+            "Wait before making the next request.\n\n"
+            f"Provider response: {body}"
+        )
+
+
+    # --------------------------------------------------------------------------
+    # HTTP 5XX
+    # --------------------------------------------------------------------------
+
+    if status >= 500:
+
+        return (
+            f"GoldAPI HTTP {status} — PROVIDER SERVER ERROR.\n\n"
+            "GoldAPI server may be temporarily unavailable.\n\n"
+            f"Provider response: {body}"
+        )
+
+
+    # --------------------------------------------------------------------------
+    # OTHER ERROR
+    # --------------------------------------------------------------------------
+
+    return (
+
+        f"GoldAPI HTTP {status}\n\n"
+        f"Provider response: {body}"
+
+    )
+
+
+# ==============================================================================
+# 🥇 FETCH LIVE XAUUSD QUOTE
+# ==============================================================================
+
+def fetch_goldapi_xauusd():
 
     """
     Fetch real XAU/USD spot quote from GoldAPI.
 
-    No synthetic prices are created.
-    If the provider does not return bid/ask, they remain unavailable.
+    Returns:
+        {
+            "success": True/False,
+            "quote": dict or None,
+            "error": str or None,
+            "using_cached_quote": bool
+        }
     """
 
-    url = "https://www.goldapi.io/api/XAU/USD"
 
-    headers = {
-        "x-access-token": GOLDAPI_KEY,
-        "Content-Type": "application/json",
-        "User-Agent": "XAUUSD-Quant-Money-Arena-V5"
-    }
+    # --------------------------------------------------------------------------
+    # INITIALIZE STATE
+    # --------------------------------------------------------------------------
 
-    start = time.perf_counter()
+    initialize_goldapi_state()
 
-    try:
 
-        response = requests.get(
-            url,
-            headers=headers,
-            timeout=REQUEST_TIMEOUT
+    # --------------------------------------------------------------------------
+    # CHECK API KEY
+    # --------------------------------------------------------------------------
+
+    if not GOLDAPI_KEY:
+
+        error = (
+            "GOLDAPI API KEY NOT FOUND.\n\n"
+            "Add this to Streamlit Secrets:\n\n"
+            'GOLDAPI = "YOUR_REAL_GOLDAPI_KEY"'
         )
 
-        latency_ms = (time.perf_counter() - start) * 1000
-
-        if response.status_code != 200:
-
-            return {
-                "success": False,
-                "error": f"GoldAPI HTTP {response.status_code}",
-                "latency_ms": latency_ms
-            }
-
-        data = response.json()
-
-        # --------------------------------------------------------------
-        # PRICE
-        # --------------------------------------------------------------
-
-        price = data.get("price")
-
-        if price is None:
-            price = data.get("ask")
-
-        if price is None:
-            price = data.get("bid")
-
-        if price is None:
-
-            return {
-                "success": False,
-                "error": "Provider returned no usable price",
-                "latency_ms": latency_ms
-            }
-
-        price = float(price)
-
-        # --------------------------------------------------------------
-        # BID / ASK
-        # --------------------------------------------------------------
-
-        bid = data.get("bid")
-        ask = data.get("ask")
-
-        bid = float(bid) if bid is not None else None
-        ask = float(ask) if ask is not None else None
-
-        # --------------------------------------------------------------
-        # MID
-        # --------------------------------------------------------------
-
-        if bid is not None and ask is not None:
-
-            mid = (bid + ask) / 2.0
-            spread = ask - bid
-
-        else:
-
-            # IMPORTANT:
-            # No fabricated bid/ask.
-            # Use provider price as reference price only.
-
-            mid = price
-            spread = None
+        st.session_state["goldapi_last_error"] = error
 
         return {
-            "success": True,
-            "provider": "GOLDAPI",
-            "symbol": SYMBOL,
-            "instrument": INSTRUMENT,
-            "price": price,
-            "bid": bid,
-            "ask": ask,
-            "mid": mid,
-            "spread": spread,
-            "latency_ms": latency_ms,
-            "raw": data
-        }
 
-    except Exception as e:
-
-        latency_ms = (time.perf_counter() - start) * 1000
-
-        return {
             "success": False,
-            "error": str(e),
-            "latency_ms": latency_ms
+
+            "quote": None,
+
+            "error": error,
+
+            "using_cached_quote": False
+
         }
 
 
-# ==============================================================================
-# DATA MANAGER
-# ==============================================================================
+    # --------------------------------------------------------------------------
+    # RATE PROTECTION
+    # --------------------------------------------------------------------------
 
-class DataManager:
+    now = time.time()
+
+    last_request = st.session_state.get(
+        "goldapi_last_request_time",
+        0.0
+    )
+
+    elapsed = now - last_request
 
 
-    @staticmethod
-    def add_quote(quote):
+    if elapsed < MIN_REQUEST_INTERVAL:
 
-        now = datetime.now(timezone.utc)
+        cached = st.session_state.get("goldapi_last_quote")
 
-        record = {
-            "timestamp": now,
-            "timestamp_unix": time.time(),
-            "price": float(quote["price"]),
-            "mid": float(quote["mid"]),
-            "bid": quote["bid"],
-            "ask": quote["ask"],
-            "spread": quote["spread"],
-            "latency_ms": float(quote["latency_ms"]),
-            "provider": quote["provider"]
-        }
+        if cached is not None:
 
-        st.session_state.quotes.append(record)
+            return {
 
-        if len(st.session_state.quotes) > MAX_QUOTES:
+                "success": True,
 
-            st.session_state.quotes = (
-                st.session_state.quotes[-MAX_QUOTES:]
+                "quote": cached,
+
+                "error": None,
+
+                "using_cached_quote": True
+
+            }
+
+
+    # --------------------------------------------------------------------------
+    # MARK REQUEST TIME
+    # --------------------------------------------------------------------------
+
+    st.session_state["goldapi_last_request_time"] = time.time()
+
+    st.session_state["goldapi_total_requests"] += 1
+
+
+    # --------------------------------------------------------------------------
+    # URL
+    # --------------------------------------------------------------------------
+
+    url = f"{GOLDAPI_BASE_URL}/{GOLDAPI_SYMBOL}"
+
+
+    # --------------------------------------------------------------------------
+    # HEADERS
+    # --------------------------------------------------------------------------
+
+    headers = build_goldapi_headers()
+
+
+    # --------------------------------------------------------------------------
+    # RETRY LOOP
+    # --------------------------------------------------------------------------
+
+    last_error = None
+
+
+    for attempt in range(1, MAX_RETRIES + 1):
+
+        try:
+
+            request_start = time.perf_counter()
+
+
+            response = requests.get(
+
+                url,
+
+                headers=headers,
+
+                timeout=REQUEST_TIMEOUT
+
             )
 
-        st.session_state.last_quote_time = now
 
-        return record
-
-
-    @staticmethod
-    def dataframe():
-
-        if not st.session_state.quotes:
-
-            return pd.DataFrame()
-
-        df = pd.DataFrame(st.session_state.quotes)
-
-        df["timestamp"] = pd.to_datetime(
-            df["timestamp"],
-            utc=True
-        )
-
-        return df
+            latency_ms = (
+                time.perf_counter() - request_start
+            ) * 1000
 
 
-# ==============================================================================
-# FEATURE ENGINEERING
-# ==============================================================================
+            # ------------------------------------------------------------------
+            # SUCCESS
+            # ------------------------------------------------------------------
 
-def safe_std(values):
+            if response.status_code == 200:
 
-    values = np.asarray(values, dtype=float)
+                try:
 
-    if len(values) < 2:
-        return 0.0
+                    data = response.json()
 
-    value = float(np.std(values))
+                except Exception as e:
 
-    if math.isnan(value):
-        return 0.0
-
-    return value
+                    raise ValueError(
+                        f"GoldAPI returned invalid JSON: {e}"
+                    )
 
 
-def calculate_features(df):
-
-    """
-    Features are calculated only from actually collected quotes.
-    """
-
-    result = {}
-
-    if df.empty or len(df) < 2:
-
-        return {
-            "returns": np.array([]),
-            "last_return": 0.0,
-            "momentum_short": 0.0,
-            "momentum_medium": 0.0,
-            "volatility": 0.0,
-            "trend_slope": 0.0,
-            "zscore": 0.0,
-            "mean_deviation": 0.0,
-            "spread": 0.0,
-            "spread_change": 0.0,
-            "quote_imbalance": 0.0,
-        }
-
-    prices = df["mid"].astype(float).values
-
-    returns = np.diff(prices) / prices[:-1]
-
-    last_return = float(returns[-1]) if len(returns) else 0.0
+                quote = parse_goldapi_quote(
+                    data=data,
+                    latency_ms=latency_ms
+                )
 
 
-    # ------------------------------------------------------------------
-    # MOMENTUM
-    # ------------------------------------------------------------------
+                # --------------------------------------------------------------
+                # STORE SUCCESS
+                # --------------------------------------------------------------
 
-    short_n = min(6, len(prices) - 1)
-    medium_n = min(20, len(prices) - 1)
+                st.session_state["goldapi_last_quote"] = quote
 
-    momentum_short = 0.0
-    momentum_medium = 0.0
+                st.session_state[
+                    "goldapi_last_success_time"
+                ] = time.time()
 
-    if short_n > 0:
+                st.session_state[
+                    "goldapi_last_error"
+                ] = None
 
-        momentum_short = (
-            prices[-1] / prices[-1 - short_n]
-        ) - 1.0
+                st.session_state[
+                    "goldapi_consecutive_errors"
+                ] = 0
 
-    if medium_n > 0:
-
-        momentum_medium = (
-            prices[-1] / prices[-1 - medium_n]
-        ) - 1.0
-
-
-    # ------------------------------------------------------------------
-    # VOLATILITY
-    # ------------------------------------------------------------------
-
-    volatility = safe_std(returns)
+                st.session_state[
+                    "goldapi_successful_requests"
+                ] += 1
 
 
-    # ------------------------------------------------------------------
-    # TREND SLOPE
-    # ------------------------------------------------------------------
+                return {
 
-    slope_n = min(30, len(prices))
+                    "success": True,
 
-    trend_slope = 0.0
+                    "quote": quote,
 
-    if slope_n >= 3:
+                    "error": None,
 
-        y = prices[-slope_n:]
+                    "using_cached_quote": False
 
-        x = np.arange(slope_n)
-
-        slope = np.polyfit(x, y, 1)[0]
-
-        trend_slope = slope / max(prices[-1], 1e-9)
+                }
 
 
-    # ------------------------------------------------------------------
-    # MEAN REVERSION
-    # ------------------------------------------------------------------
+            # ------------------------------------------------------------------
+            # HTTP ERROR
+            # ------------------------------------------------------------------
 
-    mean_n = min(30, len(prices))
+            error_message = get_goldapi_error_message(response)
 
-    rolling_prices = prices[-mean_n:]
+            last_error = error_message
 
-    rolling_mean = float(np.mean(rolling_prices))
 
-    rolling_std = safe_std(rolling_prices)
+            # --------------------------------------------------------------
+            # DON'T RETRY AUTHORIZATION ERRORS
+            # --------------------------------------------------------------
 
-    mean_deviation = (
-        prices[-1] - rolling_mean
-    ) / max(prices[-1], 1e-9)
+            if response.status_code in [401, 403]:
 
-    zscore = (
-        (prices[-1] - rolling_mean)
-        / max(rolling_std, 1e-9)
+                break
+
+
+            # --------------------------------------------------------------
+            # DON'T RETRY RATE LIMIT TOO AGGRESSIVELY
+            # --------------------------------------------------------------
+
+            if response.status_code == 429:
+
+                retry_after = response.headers.get(
+                    "Retry-After"
+                )
+
+                try:
+
+                    wait_time = float(retry_after)
+
+                except Exception:
+
+                    wait_time = RETRY_DELAY * attempt
+
+
+                if attempt < MAX_RETRIES:
+
+                    time.sleep(wait_time)
+
+                    continue
+
+                break
+
+
+            # --------------------------------------------------------------
+            # RETRY SERVER ERRORS
+            # --------------------------------------------------------------
+
+            if attempt < MAX_RETRIES:
+
+                time.sleep(RETRY_DELAY * attempt)
+
+                continue
+
+
+        except requests.exceptions.Timeout:
+
+            last_error = (
+                f"GoldAPI request timed out "
+                f"after {REQUEST_TIMEOUT} seconds."
+            )
+
+
+        except requests.exceptions.ConnectionError as e:
+
+            last_error = (
+                f"GoldAPI connection error: {e}"
+            )
+
+
+        except Exception as e:
+
+            last_error = (
+                f"GoldAPI unexpected error: "
+                f"{type(e).__name__}: {e}"
+            )
+
+
+        # ----------------------------------------------------------------------
+        # WAIT BEFORE RETRY
+        # ----------------------------------------------------------------------
+
+        if attempt < MAX_RETRIES:
+
+            time.sleep(RETRY_DELAY * attempt)
+
+
+    # ==========================================================================
+    # ❌ ALL REQUESTS FAILED
+    # ==========================================================================
+
+    st.session_state["goldapi_last_error"] = last_error
+
+    st.session_state[
+        "goldapi_consecutive_errors"
+    ] += 1
+
+
+    # --------------------------------------------------------------------------
+    # USE LAST SUCCESSFUL QUOTE IF AVAILABLE
+    #
+    # IMPORTANT:
+    # This is clearly marked as cached/stale.
+    # --------------------------------------------------------------------------
+
+    cached_quote = st.session_state.get(
+        "goldapi_last_quote"
     )
 
 
-    # ------------------------------------------------------------------
-    # SPREAD FEATURES
-    # ------------------------------------------------------------------
+    if cached_quote is not None:
 
-    spread_values = df["spread"].dropna().values
+        cached_quote = dict(cached_quote)
 
-    spread = 0.0
+        cached_quote["cached"] = True
 
-    spread_change = 0.0
+        cached_quote["cache_age_seconds"] = round(
 
-    if len(spread_values) > 0:
+            time.time()
+            -
+            cached_quote.get(
+                "received_epoch",
+                time.time()
+            ),
 
-        spread = float(spread_values[-1])
+            1
 
-    if len(spread_values) >= 2:
-
-        spread_change = (
-            float(spread_values[-1])
-            - float(spread_values[-2])
         )
 
 
-    # ------------------------------------------------------------------
-    # QUOTE IMBALANCE PROXY
-    # ------------------------------------------------------------------
-    #
-    # This is NOT order-book imbalance.
-    #
-    # It is only based on observed quote movement:
-    # upward quote changes vs downward quote changes.
-    # ------------------------------------------------------------------
+        return {
 
-    quote_imbalance = 0.0
+            "success": False,
 
-    if len(returns) >= 5:
+            "quote": cached_quote,
 
-        recent = returns[-min(10, len(returns)):]
+            "error": last_error,
 
-        up = np.sum(recent > 0)
+            "using_cached_quote": True
 
-        down = np.sum(recent < 0)
-
-        total = up + down
-
-        if total > 0:
-
-            quote_imbalance = (up - down) / total
+        }
 
 
-    result = {
+    # --------------------------------------------------------------------------
+    # NO DATA AVAILABLE
+    # --------------------------------------------------------------------------
 
-        "returns": returns,
+    return {
 
-        "last_return": last_return,
+        "success": False,
 
-        "momentum_short": momentum_short,
+        "quote": None,
 
-        "momentum_medium": momentum_medium,
+        "error": last_error,
 
-        "volatility": volatility,
-
-        "trend_slope": trend_slope,
-
-        "zscore": zscore,
-
-        "mean_deviation": mean_deviation,
-
-        "spread": spread,
-
-        "spread_change": spread_change,
-
-        "quote_imbalance": quote_imbalance,
+        "using_cached_quote": False
 
     }
+
+
+# ==============================================================================
+# 🎯 SIMPLE COMPATIBILITY FUNCTION
+# ==============================================================================
+
+def get_live_xauusd_quote():
+
+    """
+    Compatibility wrapper for the rest of V5.
+    """
+
+    result = fetch_goldapi_xauusd()
 
     return result
 
 
 # ==============================================================================
-# MODEL ENGINES
+# 📊 GOLDAPI STATUS FUNCTION
 # ==============================================================================
 
-def clip_score(value):
+def get_goldapi_status():
 
-    return float(np.clip(value, -1.0, 1.0))
+    initialize_goldapi_state()
 
 
-def momentum_engine(features):
-
-    score = (
-        features["momentum_short"] * 4000
-        + features["momentum_medium"] * 2500
-        + features["last_return"] * 2500
+    total_requests = st.session_state.get(
+        "goldapi_total_requests",
+        0
     )
 
-    return clip_score(score)
-
-
-def mean_reversion_engine(features):
-
-    z = features["zscore"]
-
-    # Negative z-score = below mean = upward reversion tendency
-    score = -z / 3.0
-
-    return clip_score(score)
-
-
-def trend_engine(features):
-
-    score = (
-        features["trend_slope"] * 6000
-        + features["momentum_medium"] * 2000
+    successful_requests = st.session_state.get(
+        "goldapi_successful_requests",
+        0
     )
 
-    return clip_score(score)
 
+    success_rate = 0.0
 
-def microstructure_engine(features):
 
-    """
-    Quote-based only.
+    if total_requests > 0:
 
-    NOT real order-book microstructure.
-    """
+        success_rate = (
+            successful_requests / total_requests
+        ) * 100
 
-    quote_component = features["quote_imbalance"]
 
-    spread_penalty = 0.0
+    return {
 
-    if features["spread"] > 0:
+        "provider": "GOLDAPI",
 
-        spread_penalty = min(
-            abs(features["spread_change"])
-            / max(features["spread"], 1e-9),
-            1.0
-        )
+        "api_key_configured": bool(GOLDAPI_KEY),
 
-    score = quote_component * (1.0 - 0.25 * spread_penalty)
+        "total_requests": total_requests,
 
-    return clip_score(score)
+        "successful_requests": successful_requests,
 
+        "success_rate": round(success_rate, 2),
 
-def statistical_engine(features):
+        "consecutive_errors":
+            st.session_state.get(
+                "goldapi_consecutive_errors",
+                0
+            ),
 
-    returns = features["returns"]
+        "last_error":
+            st.session_state.get(
+                "goldapi_last_error"
+            ),
 
-    if len(returns) < 5:
-        return 0.0
-
-    recent = returns[-min(20, len(returns)):]
-
-    mean_return = float(np.mean(recent))
-
-    std_return = safe_std(recent)
-
-    score = mean_return / max(std_return, 1e-9)
-
-    return clip_score(score / 2.0)
-
-
-# ==============================================================================
-# ML FEATURES
-# ==============================================================================
-
-def feature_vector_from_dataframe(df):
-
-    f = calculate_features(df)
-
-    return np.array([
-        f["last_return"],
-        f["momentum_short"],
-        f["momentum_medium"],
-        f["volatility"],
-        f["trend_slope"],
-        f["zscore"],
-        f["mean_deviation"],
-        f["spread"],
-        f["spread_change"],
-        f["quote_imbalance"],
-    ], dtype=float)
-
-
-# ==============================================================================
-# ML TRAINING
-# ==============================================================================
-
-def train_ml_model_if_needed():
-
-    completed = st.session_state.completed_trades
-
-    if len(completed) < MIN_HISTORY_FOR_ML:
-
-        st.session_state.ml_status = (
-            f"INSUFFICIENT_HISTORY "
-            f"({len(completed)}/{MIN_HISTORY_FOR_ML})"
-        )
-
-        return
-
-
-    # Retrain periodically
-
-    if (
-        st.session_state.ml_model is not None
-        and len(completed)
-        - st.session_state.ml_last_train_count
-        < 10
-    ):
-        return
-
-
-    X = []
-    y = []
-
-
-    for trade in completed:
-
-        vector = trade.get("feature_vector")
-
-        outcome = trade.get("outcome")
-
-        if vector is None:
-            continue
-
-        if outcome not in [0, 1]:
-            continue
-
-        X.append(vector)
-
-        y.append(outcome)
-
-
-    if len(X) < MIN_HISTORY_FOR_ML:
-
-        st.session_state.ml_status = "INSUFFICIENT_VALID_TRAINING_DATA"
-
-        return
-
-
-    # Need both classes
-
-    if len(set(y)) < 2:
-
-        st.session_state.ml_status = "WAITING_FOR_BOTH_OUTCOME_CLASSES"
-
-        return
-
-
-    try:
-
-        model = RandomForestClassifier(
-            n_estimators=200,
-            max_depth=6,
-            min_samples_leaf=3,
-            random_state=42,
-            n_jobs=-1
-        )
-
-        model.fit(
-            np.asarray(X, dtype=float),
-            np.asarray(y, dtype=int)
-        )
-
-        st.session_state.ml_model = model
-
-        st.session_state.ml_last_train_count = len(completed)
-
-        st.session_state.ml_status = (
-            f"ACTIVE | TRAINED ON {len(X)} COMPLETED TRADES"
-        )
-
-    except Exception as e:
-
-        st.session_state.ml_status = f"ML ERROR: {str(e)[:100]}"
-
-
-# ==============================================================================
-# ML PREDICTION
-# ==============================================================================
-
-def get_ml_probability(df):
-
-    model = st.session_state.ml_model
-
-    if model is None:
-
-        return None
-
-    try:
-
-        x = feature_vector_from_dataframe(df).reshape(1, -1)
-
-        probability = model.predict_proba(x)[0]
-
-        classes = list(model.classes_)
-
-        if 1 in classes:
-
-            idx = classes.index(1)
-
-            return float(probability[idx])
-
-    except Exception:
-
-        return None
-
-    return None
-
-
-# ==============================================================================
-# FORECAST ENGINE
-# ==============================================================================
-
-def run_forecast(df, horizon_seconds):
-
-    start = time.perf_counter()
-
-    features = calculate_features(df)
-
-    # --------------------------------------------------------------------------
-    # MODEL SCORES
-    # --------------------------------------------------------------------------
-
-    momentum = momentum_engine(features)
-
-    mean_reversion = mean_reversion_engine(features)
-
-    microstructure = microstructure_engine(features)
-
-    statistical = statistical_engine(features)
-
-    trend = trend_engine(features)
-
-
-    scores = {
-
-        "Momentum": momentum,
-
-        "Mean Reversion": mean_reversion,
-
-        "Microstructure": microstructure,
-
-        "Statistical": statistical,
-
-        "Trend": trend,
+        "last_success_time":
+            st.session_state.get(
+                "goldapi_last_success_time"
+            )
 
     }
 
 
-    # --------------------------------------------------------------------------
-    # HORIZON WEIGHTS
-    # --------------------------------------------------------------------------
+# ==============================================================================
+# 🖥️ DISPLAY GOLDAPI STATUS
+# ==============================================================================
 
-    if horizon_seconds == 180:
+def show_goldapi_connection_status():
 
-        weights = {
-            "Momentum": 0.28,
-            "Mean Reversion": 0.18,
-            "Microstructure": 0.22,
-            "Statistical": 0.14,
-            "Trend": 0.18,
-        }
+    status = get_goldapi_status()
+
+
+    if status["api_key_configured"]:
+
+        st.success(
+            "🟢 GOLDAPI CONNECTION ENGINE READY"
+        )
 
     else:
 
-        weights = {
-            "Momentum": 0.20,
-            "Mean Reversion": 0.18,
-            "Microstructure": 0.12,
-            "Statistical": 0.15,
-            "Trend": 0.35,
+        st.error(
+            "🔴 GOLDAPI API KEY NOT CONFIGURED"
+        )
+
+
+    col1, col2, col3, col4 = st.columns(4)
+
+
+    col1.metric(
+        "Provider",
+        status["provider"]
+    )
+
+
+    col2.metric(
+        "Requests",
+        status["total_requests"]
+    )
+
+
+    col3.metric(
+        "Success Rate",
+        f'{status["success_rate"]}%'
+    )
+
+
+    col4.metric(
+        "Errors",
+        status["consecutive_errors"]
+    )
+
+
+    if status["last_error"]:
+
+        st.warning(
+            f"⚠️ Last Provider Error:\n\n"
+            f"{status['last_error']}"
+        )
+
+
+# ==============================================================================
+# 🧪 CONNECTION TEST FUNCTION
+# ==============================================================================
+
+def test_goldapi_connection():
+
+    result = fetch_goldapi_xauusd()
+
+
+    if result["success"]:
+
+        quote = result["quote"]
+
+        return {
+
+            "connected": True,
+
+            "message": (
+                f"GoldAPI Connected | "
+                f"XAU/USD: ${quote['price']:,.3f}"
+            ),
+
+            "quote": quote
+
         }
 
 
-    # --------------------------------------------------------------------------
-    # ENSEMBLE
-    # --------------------------------------------------------------------------
+    return {
 
-    weighted_score = sum(
-        scores[name] * weights[name]
-        for name in scores
-    )
+        "connected": False,
 
+        "message": result["error"],
 
-    # --------------------------------------------------------------------------
-    # ML
-    # --------------------------------------------------------------------------
-
-    ml_probability = get_ml_probability(df)
-
-    if ml_probability is not None:
-
-        ml_score = (ml_probability - 0.5) * 2.0
-
-        ensemble_score = (
-            weighted_score * 0.75
-            + ml_score * 0.25
-        )
-
-    else:
-
-        ensemble_score = weighted_score
-
-
-    ensemble_score = clip_score(ensemble_score)
-
-
-    # --------------------------------------------------------------------------
-    # AGREEMENT
-    # --------------------------------------------------------------------------
-
-    if ensemble_score >= 0:
-
-        agreement = sum(
-            1 for value in scores.values()
-            if value > 0
-        )
-
-    else:
-
-        agreement = sum(
-            1 for value in scores.values()
-            if value < 0
-        )
-
-
-    # --------------------------------------------------------------------------
-    # PROBABILITIES
-    # --------------------------------------------------------------------------
-
-    strength = abs(ensemble_score)
-
-    flat_probability = max(
-        0.12,
-        0.28 - strength * 0.18
-    )
-
-    directional_probability = 1.0 - flat_probability
-
-
-    if ensemble_score >= 0:
-
-        up_probability = (
-            directional_probability
-            * (0.50 + strength * 0.50)
-        )
-
-        down_probability = (
-            directional_probability - up_probability
-        )
-
-    else:
-
-        down_probability = (
-            directional_probability
-            * (0.50 + strength * 0.50)
-        )
-
-        up_probability = (
-            directional_probability - down_probability
-        )
-
-
-    # Normalize
-
-    total_probability = (
-        up_probability
-        + down_probability
-        + flat_probability
-    )
-
-    up_probability /= total_probability
-
-    down_probability /= total_probability
-
-    flat_probability /= total_probability
-
-
-    # --------------------------------------------------------------------------
-    # FINAL SIGNAL
-    # ALWAYS BUY OR SELL
-    # --------------------------------------------------------------------------
-
-    signal = (
-        "BUY"
-        if up_probability >= down_probability
-        else "SELL"
-    )
-
-
-    # --------------------------------------------------------------------------
-    # EXPECTED MOVE
-    #
-    # Derived from observed quote volatility.
-    # --------------------------------------------------------------------------
-
-    current_price = float(df["mid"].iloc[-1])
-
-    observed_volatility = features["volatility"]
-
-    # Approximate number of 5-second polling intervals
-
-    intervals = max(
-        horizon_seconds / POLL_SECONDS,
-        1
-    )
-
-    volatility_move = (
-        current_price
-        * observed_volatility
-        * math.sqrt(intervals)
-    )
-
-    direction = (
-        1
-        if signal == "BUY"
-        else -1
-    )
-
-    confidence = max(
-        abs(up_probability - down_probability),
-        0.01
-    )
-
-    expected_move = (
-        direction
-        * volatility_move
-        * confidence
-    )
-
-
-    # If history is still warming up, expected move remains conservative
-
-    if len(df) < MIN_HISTORY_FOR_SIGNALS:
-
-        expected_move = 0.0
-
-
-    expected_return_pct = (
-        expected_move
-        / max(current_price, 1e-9)
-        * 100
-    )
-
-
-    # --------------------------------------------------------------------------
-    # FORECAST RANGE
-    # --------------------------------------------------------------------------
-
-    range_width = max(
-        volatility_move * 2.0,
-        current_price * 0.00005
-    )
-
-    forecast_low = current_price - range_width
-
-    forecast_high = current_price + range_width
-
-
-    # --------------------------------------------------------------------------
-    # MARKET REGIME
-    # --------------------------------------------------------------------------
-
-    if len(df) < MIN_HISTORY_FOR_SIGNALS:
-
-        regime = "WARMUP"
-
-        volatility_label = "WARMUP"
-
-    else:
-
-        if observed_volatility < 0.00005:
-            volatility_label = "LOW"
-
-        elif observed_volatility < 0.00015:
-            volatility_label = "NORMAL"
-
-        else:
-            volatility_label = "HIGH"
-
-
-        trend_strength = abs(features["trend_slope"])
-
-        if trend_strength > 0.00010:
-
-            regime = "TRENDING"
-
-        elif abs(features["zscore"]) > 1.5:
-
-            regime = "MEAN_REVERSION"
-
-        else:
-
-            regime = "RANGING"
-
-
-    # --------------------------------------------------------------------------
-    # DATA QUALITY
-    # --------------------------------------------------------------------------
-
-    quality = 0.0
-
-    if len(df) >= 2:
-        quality += 35
-
-    if len(df) >= 10:
-        quality += 20
-
-    if len(df) >= 30:
-        quality += 20
-
-    if df["bid"].notna().iloc[-1]:
-        quality += 12.5
-
-    if df["ask"].notna().iloc[-1]:
-        quality += 12.5
-
-
-    processing_ms = (
-        time.perf_counter() - start
-    ) * 1000
-
-
-    forecast = {
-
-        "timestamp": datetime.now(timezone.utc),
-
-        "horizon": horizon_seconds,
-
-        "entry_price": current_price,
-
-        "signal": signal,
-
-        "up_probability": up_probability * 100,
-
-        "down_probability": down_probability * 100,
-
-        "flat_probability": flat_probability * 100,
-
-        "signal_power": ensemble_score,
-
-        "agreement": agreement,
-
-        "model_scores": scores,
-
-        "expected_move": expected_move,
-
-        "expected_return_pct": expected_return_pct,
-
-        "forecast_low": forecast_low,
-
-        "forecast_high": forecast_high,
-
-        "market_regime": regime,
-
-        "volatility_label": volatility_label,
-
-        "data_quality": quality,
-
-        "ml_probability": (
-            ml_probability * 100
-            if ml_probability is not None
-            else None
-        ),
-
-        "feature_vector": feature_vector_from_dataframe(df).tolist(),
-
-        "processing_ms": processing_ms,
-
-        "completed": False,
-
-        "exit_price": None,
-
-        "pnl": None,
-
-        "outcome": None,
+        "quote": result["quote"]
 
     }
 
-    return forecast
-
 
 # ==============================================================================
-# PAPER TRADE COMPLETION
+# 🚀 END GOLDAPI CONNECTION ENGINE
 # ==============================================================================
-
-def update_completed_trades(current_price):
-
-    now = datetime.now(timezone.utc)
-
-    newly_completed = 0
-
-    remaining_forecasts = []
-
-
-    for forecast in st.session_state.forecasts:
-
-        if forecast.get("completed", False):
-
-            continue
-
-
-        age_seconds = (
-            now - forecast["timestamp"]
-        ).total_seconds()
-
-
-        # ----------------------------------------------------------------------
-        # Complete when later observed quote exists
-        # ----------------------------------------------------------------------
-
-        if age_seconds >= forecast["horizon"]:
-
-            forecast["completed"] = True
-
-            forecast["exit_price"] = float(current_price)
-
-
-            if forecast["signal"] == "BUY":
-
-                pnl = (
-                    current_price
-                    - forecast["entry_price"]
-                )
-
-            else:
-
-                pnl = (
-                    forecast["entry_price"]
-                    - current_price
-                )
-
-
-            forecast["pnl"] = float(pnl)
-
-            # Binary outcome for ML
-
-            outcome = 1 if pnl > 0 else 0
-
-            forecast["outcome"] = outcome
-
-
-            trade = forecast.copy()
-
-            st.session_state.completed_trades.append(trade)
-
-            st.session_state.paper_pnl += pnl
-
-
-            if pnl > 0:
-
-                st.session_state.wins += 1
-
-            elif pnl < 0:
-
-                st.session_state.losses += 1
-
-
-            newly_completed += 1
-
-
-        else:
-
-            remaining_forecasts.append(forecast)
-
-
-    st.session_state.forecasts = remaining_forecasts
-
-
-    if len(st.session_state.completed_trades) > MAX_COMPLETED_TRADES:
-
-        st.session_state.completed_trades = (
-            st.session_state.completed_trades[-MAX_COMPLETED_TRADES:]
-        )
-
-
-    return newly_completed
-
-
-# ==============================================================================
-# FORECAST STORAGE
-# ==============================================================================
-
-def create_new_forecasts(df):
-
-    created = []
-
-    for horizon in FORECAST_HORIZONS:
-
-        forecast = run_forecast(
-            df,
-            horizon
-        )
-
-        st.session_state.forecasts.append(forecast)
-
-        created.append(forecast)
-
-
-    if len(st.session_state.forecasts) > MAX_FORECASTS:
-
-        st.session_state.forecasts = (
-            st.session_state.forecasts[-MAX_FORECASTS:]
-        )
-
-
-    st.session_state.last_forecast = {
-
-        f["horizon"]: f
-        for f in created
-    }
-
-    return created
-
-
-# ==============================================================================
-# CHART FUNCTIONS
-# ==============================================================================
-
-def make_price_chart(df):
-
-    fig = go.Figure()
-
-    if not df.empty:
-
-        fig.add_trace(
-            go.Scatter(
-                x=df["timestamp"],
-                y=df["mid"],
-                mode="lines",
-                name="XAUUSD MID"
-            )
-        )
-
-
-    fig.update_layout(
-
-        height=350,
-
-        margin=dict(
-            l=10,
-            r=10,
-            t=35,
-            b=10
-        ),
-
-        title="📈 LIVE XAUUSD PRICE",
-
-        xaxis_title="Time",
-
-        yaxis_title="Price ($)",
-
-        template="plotly_dark",
-
-        showlegend=False,
-
-    )
-
-    return fig
-
-
-def make_probability_chart(forecasts):
-
-    labels = []
-
-    up = []
-
-    down = []
-
-    flat = []
-
-
-    for f in forecasts:
-
-        labels.append(
-            f"{f['horizon']} SEC"
-        )
-
-        up.append(f["up_probability"])
-
-        down.append(f["down_probability"])
-
-        flat.append(f["flat_probability"])
-
-
-    fig = go.Figure()
-
-
-    fig.add_trace(
-        go.Bar(
-            name="UP",
-            x=labels,
-            y=up
-        )
-    )
-
-    fig.add_trace(
-        go.Bar(
-            name="DOWN",
-            x=labels,
-            y=down
-        )
-    )
-
-    fig.add_trace(
-        go.Bar(
-            name="FLAT",
-            x=labels,
-            y=flat
-        )
-    )
-
-
-    fig.update_layout(
-
-        barmode="group",
-
-        height=320,
-
-        title="🎯 MODEL PROBABILITY ARENA",
-
-        yaxis_title="Probability %",
-
-        template="plotly_dark",
-
-        legend=dict(
-            orientation="h"
-        )
-
-    )
-
-    return fig
-
-
-def make_model_chart(forecasts):
-
-    if not forecasts:
-
-        return go.Figure()
-
-
-    # Use 300-second model scores if available
-
-    forecast = forecasts[-1]
-
-    scores = forecast["model_scores"]
-
-    names = list(scores.keys())
-
-    values = list(scores.values())
-
-
-    fig = go.Figure(
-
-        data=[
-            go.Bar(
-                x=names,
-                y=values
-            )
-        ]
-
-    )
-
-
-    fig.update_layout(
-
-        title="🧠 MODEL POWER MATRIX",
-
-        yaxis_title="BUY ←→ SELL POWER",
-
-        height=350,
-
-        template="plotly_dark",
-
-        yaxis=dict(
-            range=[-1, 1]
-        )
-
-    )
-
-    return fig
-
-
-# ==============================================================================
-# FORECAST CARD
-# ==============================================================================
-
-def render_forecast_card(f):
-
-    signal = f["signal"]
-
-    if signal == "BUY":
-
-        signal_class = "signal-buy"
-        signal_emoji = "🟢"
-
-    else:
-
-        signal_class = "signal-sell"
-        signal_emoji = "🔴"
-
-
-    st.subheader(
-        f"🎯 {f['horizon']} SECOND FORECAST"
-    )
-
-
-    c1, c2, c3 = st.columns(3)
-
-    c1.metric(
-        "UP Probability",
-        f"{f['up_probability']:.2f}%"
-    )
-
-    c2.metric(
-        "DOWN Probability",
-        f"{f['down_probability']:.2f}%"
-    )
-
-    c3.metric(
-        "FLAT Probability",
-        f"{f['flat_probability']:.2f}%"
-    )
-
-
-    st.markdown(
-        f'<div class="{signal_class}">'
-        f'{signal_emoji} {signal}'
-        f'</div>',
-        unsafe_allow_html=True
-    )
-
-
-    a, b, c = st.columns(3)
-
-    a.metric(
-        "Signal Power",
-        f"{f['signal_power']:+.4f}"
-    )
-
-    b.metric(
-        "Model Agreement",
-        f"{f['agreement']}/5"
-    )
-
-    c.metric(
-        "Expected Move",
-        f"${f['expected_move']:+.4f}"
-    )
-
-
-    d, e, g = st.columns(3)
-
-    d.metric(
-        "Expected Return",
-        f"{f['expected_return_pct']:+.4f}%"
-    )
-
-    e.metric(
-        "Forecast Low",
-        f"${f['forecast_low']:,.3f}"
-    )
-
-    g.metric(
-        "Forecast High",
-        f"${f['forecast_high']:,.3f}"
-    )
-
-
-    st.caption(
-        f"Market Regime: {f['market_regime']} | "
-        f"Volatility: {f['volatility_label']} | "
-        f"Data Quality: {f['data_quality']:.1f}%"
-    )
-
-
-    if f["ml_probability"] is not None:
-
-        st.caption(
-            f"🤖 ML UP Probability: "
-            f"{f['ml_probability']:.2f}%"
-        )
-
-    else:
-
-        st.caption(
-            "🤖 ML: Waiting for sufficient completed trade history"
-        )
-
-
-# ==============================================================================
-# SIDEBAR
-# ==============================================================================
-
-with st.sidebar:
-
-    st.title("🎮 CONTROL PANEL")
-
-    auto_refresh = st.toggle(
-        "Auto Refresh",
-        value=True
-    )
-
-    refresh_seconds = st.slider(
-        "Refresh Interval (seconds)",
-        min_value=5,
-        max_value=60,
-        value=5,
-        step=5
-    )
-
-    st.divider()
-
-    st.write("### ⚡ SYSTEM")
-
-    st.write(f"**Mode:** PAPER")
-
-    st.write(f"**Symbol:** {SYMBOL}")
-
-    st.write(f"**Provider:** GOLDAPI")
-
-    st.write(f"**Polling:** {refresh_seconds} sec")
-
-
-    st.divider()
-
-
-    if st.button(
-        "🔄 REFRESH NOW",
-        use_container_width=True
-    ):
-        st.rerun()
-
-
-    if st.button(
-        "🗑️ CLEAR SESSION DATA",
-        use_container_width=True
-    ):
-
-        for key in [
-            "quotes",
-            "forecasts",
-            "completed_trades",
-            "paper_pnl",
-            "wins",
-            "losses",
-            "ml_model",
-            "ml_last_train_count",
-            "ml_status",
-        ]:
-
-            if key in st.session_state:
-
-                del st.session_state[key]
-
-        st.rerun()
-
-
-    st.divider()
-
-    st.info(
-        "⚠️ The app collects a quote when Streamlit runs. "
-        "Polling is not WebSocket streaming."
-    )
-
-
-# ==============================================================================
-# AUTO REFRESH
-# ==============================================================================
-
-if auto_refresh and AUTOREFRESH_AVAILABLE:
-
-    st_autorefresh(
-        interval=refresh_seconds * 1000,
-        key="xauusd_live_refresh"
-    )
-
-
-# ==============================================================================
-# HEADER
-# ==============================================================================
-
-st.markdown(
-    '<div class="quant-title">'
-    '🥇⚡ XAUUSD QUANT MONEY ARENA V5 🎮'
-    '</div>',
-    unsafe_allow_html=True
-)
-
-st.markdown(
-    '<div class="quant-subtitle">'
-    'LIVE QUANT SIGNALS • 3 MINUTE • 5 MINUTE • PAPER MONEY GAME'
-    '</div>',
-    unsafe_allow_html=True
-)
-
-
-# ==============================================================================
-# API CHECK
-# ==============================================================================
-
-if not GOLDAPI_KEY:
-
-    st.error(
-        "❌ GOLDAPI API KEY NOT FOUND"
-    )
-
-    st.info(
-        """
-Add your API key in Streamlit Secrets:
-
-GOLDAPI = "YOUR_API_KEY"
-        """
-    )
-
-    st.stop()
-
-
-# ==============================================================================
-# FETCH LIVE QUOTE
-# ==============================================================================
-
-with st.spinner("⚡ Fetching live XAUUSD quote..."):
-
-    quote = fetch_live_xauusd()
-
-
-if not quote["success"]:
-
-    st.session_state.provider_errors += 1
-
-    st.error(
-        f"❌ LIVE DATA ERROR: {quote['error']}"
-    )
-
-    st.caption(
-        f"Provider latency: "
-        f"{quote.get('latency_ms', 0):.1f} ms"
-    )
-
-
-    # Display previously collected data if available
-
-    df = DataManager.dataframe()
-
-    if df.empty:
-
-        st.stop()
-
-else:
-
-    st.session_state.request_count += 1
-
-    DataManager.add_quote(quote)
-
-    df = DataManager.dataframe()
-
-
-# ==============================================================================
-# COMPLETE OLD PAPER TRADES
-# ==============================================================================
-
-current_mid = float(df["mid"].iloc[-1])
-
-new_completed = update_completed_trades(
-    current_mid
-)
-
-
-# ==============================================================================
-# TRAIN ML
-# ==============================================================================
-
-train_ml_model_if_needed()
-
-
-# ==============================================================================
-# CREATE CURRENT FORECASTS
-# ==============================================================================
-
-forecasts = create_new_forecasts(df)
-
-
-# ==============================================================================
-# LIVE MARKET METRICS
-# ==============================================================================
-
-st.subheader("⚡ LIVE MARKET")
-
-
-m1, m2, m3, m4, m5 = st.columns(5)
-
-
-latest = df.iloc[-1]
-
-
-m1.metric(
-    "XAUUSD MID",
-    f"${latest['mid']:,.3f}"
-)
-
-
-bid_text = (
-    f"${latest['bid']:,.3f}"
-    if pd.notna(latest["bid"])
-    else "N/A"
-)
-
-m2.metric(
-    "BID",
-    bid_text
-)
-
-
-ask_text = (
-    f"${latest['ask']:,.3f}"
-    if pd.notna(latest["ask"])
-    else "N/A"
-)
-
-m3.metric(
-    "ASK",
-    ask_text
-)
-
-
-spread_text = (
-    f"${latest['spread']:,.5f}"
-    if pd.notna(latest["spread"])
-    else "N/A"
-)
-
-m4.metric(
-    "SPREAD",
-    spread_text
-)
-
-
-m5.metric(
-    "LATENCY",
-    f"{latest['latency_ms']:.1f} ms"
-)
-
-
-st.divider()
-
-
-# ==============================================================================
-# SIGNAL ARENA
-# ==============================================================================
-
-st.subheader("🎯 QUANT SIGNAL ARENA")
-
-
-left, right = st.columns(2)
-
-
-with left:
-
-    render_forecast_card(
-        forecasts[0]
-    )
-
-
-with right:
-
-    render_forecast_card(
-        forecasts[1]
-    )
-
-
-st.divider()
-
-
-# ==============================================================================
-# MODEL POWER MATRIX
-# ==============================================================================
-
-st.plotly_chart(
-    make_model_chart(forecasts),
-    use_container_width=True
-)
-
-
-# ==============================================================================
-# LIVE PRICE
-# ==============================================================================
-
-st.plotly_chart(
-    make_price_chart(df),
-    use_container_width=True
-)
-
-
-# ==============================================================================
-# PROBABILITY CHART
-# ==============================================================================
-
-st.plotly_chart(
-    make_probability_chart(forecasts),
-    use_container_width=True
-)
-
-
-# ==============================================================================
-# PAPER MONEY SCOREBOARD
-# ==============================================================================
-
-st.subheader("💰🏆 PAPER MONEY SCOREBOARD")
-
-
-completed_count = len(
-    st.session_state.completed_trades
-)
-
-
-total_decisions = (
-    st.session_state.wins
-    + st.session_state.losses
-)
-
-
-win_rate = (
-    st.session_state.wins
-    / total_decisions
-    * 100
-    if total_decisions > 0
-    else 0.0
-)
-
-
-s1, s2, s3, s4 = st.columns(4)
-
-
-s1.metric(
-    "🏆 Completed Trades",
-    completed_count
-)
-
-
-s2.metric(
-    "🟢 Wins",
-    st.session_state.wins
-)
-
-
-s3.metric(
-    "🎯 Win Rate",
-    f"{win_rate:.2f}%"
-)
-
-
-s4.metric(
-    "💰 Paper P&L",
-    f"${st.session_state.paper_pnl:+.3f}"
-)
-
-
-# ==============================================================================
-# LAST 10 COMPLETED TRADES
-# ==============================================================================
-
-st.subheader(
-    "🏆 LAST 10 COMPLETED 5-MINUTE PAPER TRADES"
-)
-
-
-if not st.session_state.completed_trades:
-
-    st.info(
-        "🎮 No completed 5-minute paper trades yet. "
-        "A 300-second forecast completes after approximately 300 seconds "
-        "when a later quote is observed."
-    )
-
-else:
-
-    # Only 300-second trades
-
-    five_minute_trades = [
-
-        t
-        for t in st.session_state.completed_trades
-
-        if t["horizon"] == 300
-
-    ]
-
-
-    if not five_minute_trades:
-
-        st.info(
-            "No completed 300-second trades yet."
-        )
-
-    else:
-
-        rows = []
-
-        for trade in five_minute_trades[-10:][::-1]:
-
-            rows.append({
-
-                "Time": (
-                    pd.Timestamp(
-                        trade["timestamp"]
-                    ).strftime("%H:%M:%S")
-                ),
-
-                "Signal": trade["signal"],
-
-                "Entry": round(
-                    trade["entry_price"],
-                    3
-                ),
-
-                "Exit": round(
-                    trade["exit_price"],
-                    3
-                ),
-
-                "P&L": round(
-                    trade["pnl"],
-                    4
-                ),
-
-                "Result": (
-                    "WIN"
-                    if trade["pnl"] > 0
-                    else (
-                        "LOSS"
-                        if trade["pnl"] < 0
-                        else "FLAT"
-                    )
-                ),
-
-            })
-
-
-        history_df = pd.DataFrame(rows)
-
-        st.dataframe(
-            history_df,
-            use_container_width=True,
-            hide_index=True
-        )
-
-
-# ==============================================================================
-# LIVE DATA HISTORY
-# ==============================================================================
-
-with st.expander(
-    "📊 VIEW LIVE QUOTE HISTORY",
-    expanded=False
-):
-
-    if not df.empty:
-
-        display_df = df.copy()
-
-        display_df["timestamp"] = (
-            display_df["timestamp"]
-            .dt.strftime("%Y-%m-%d %H:%M:%S UTC")
-        )
-
-        st.dataframe(
-            display_df.tail(100),
-            use_container_width=True,
-            hide_index=True
-        )
-
-
-# ==============================================================================
-# MODEL DETAILS
-# ==============================================================================
-
-with st.expander(
-    "🧠 MODEL POWER DETAILS",
-    expanded=False
-):
-
-    score_rows = []
-
-    for name, value in forecasts[-1]["model_scores"].items():
-
-        score_rows.append({
-
-            "Model": name,
-
-            "Score": round(value, 6),
-
-            "Direction": (
-                "BUY"
-                if value > 0
-                else (
-                    "SELL"
-                    if value < 0
-                    else "NEUTRAL"
-                )
-            )
-
-        })
-
-
-    st.dataframe(
-        pd.DataFrame(score_rows),
-        use_container_width=True,
-        hide_index=True
-    )
-
-
-# ==============================================================================
-# SYSTEM STATUS
-# ==============================================================================
-
-st.subheader("⚙️ SYSTEM STATUS")
-
-
-status_text = f"""
-🟢 **QUANT MONEY ENGINE ONLINE**
-
-**Version:** {APP_VERSION}
-
-**Provider:** GOLDAPI
-
-**Instrument:** {INSTRUMENT}
-
-**Quotes Collected:** {len(df)}
-
-**Active Paper Forecasts:** {len(st.session_state.forecasts)}
-
-**Completed Trades:** {len(st.session_state.completed_trades)}
-
-**ML Status:** {st.session_state.ml_status}
-
-**Provider Requests:** {st.session_state.request_count}
-
-**Provider Errors:** {st.session_state.provider_errors}
-
-⚠️ **PAPER / RESEARCH ONLY**
-
-BUY and SELL are model directions.
-
-Probabilities are model probability estimates.
-
-No guaranteed profit claims.
-"""
-
-st.success(status_text)
-
-
-# ==============================================================================
-# FOOTER
-# ==============================================================================
-
-st.caption(
-    f"🥇 XAUUSD Quant Money Arena V5 FIXED | "
-    f"Last Update: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')} "
-    f"| Polling Interval: {refresh_seconds} sec"
-)
